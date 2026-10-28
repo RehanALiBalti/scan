@@ -1,5 +1,7 @@
 # dependencies
+node_modules/
 /node_modules
+package-lock.json
 /.pnp
 .pnp.*
 .yarn/*
@@ -32,7 +34,9 @@ yarn-error.log*
 
 # env files
 .env
+.env.*
 .env*.local
+!.env.example
 
 # typescript
 next-env.d.ts
