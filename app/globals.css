@@ -1225,6 +1225,51 @@ th {
   font-weight: 700;
 }
 
+.media-slot-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.media-url-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-upload-block {
+  padding: 14px;
+  border-radius: 16px;
+  background: #faf9f8;
+  border: 1px solid #f1eeea;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.video-upload-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.video-ready {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted-2);
+}
+
+.video-preview-el {
+  width: 100%;
+  max-height: 220px;
+  border-radius: 12px;
+  background: #111;
+}
+
 .routine-type-note {
   padding: 12px 14px;
   border-radius: 12px;

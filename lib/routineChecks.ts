@@ -33,17 +33,6 @@ export type RoutineCheckDoc = {
   completedUsers?: unknown[];
 };
 
-export const DEFAULT_STATUS_IMAGES = [
-  "https://cdn.jsdelivr.net/npm/openmoji@15.0.0/color/72x72/1F61E.png",
-  "https://cdn.jsdelivr.net/npm/openmoji@15.0.0/color/72x72/1F615.png",
-  "https://cdn.jsdelivr.net/npm/openmoji@15.0.0/color/72x72/1F610.png",
-  "https://cdn.jsdelivr.net/npm/openmoji@15.0.0/color/72x72/1F642.png",
-  "https://cdn.jsdelivr.net/npm/openmoji@15.0.0/color/72x72/1F60A.png",
-];
-
-export const SAMPLE_VIDEO_URL =
-  "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
-
 /** Date → Firestore doc ID `ddMMyyyy` */
 export function dateToRoutineDocId(date: Date): string {
   const dd = String(date.getDate()).padStart(2, "0");
@@ -103,40 +92,9 @@ export function makeTaskId(docId: string, order: number): string {
   return `${docId}_${padTaskIndex(order)}`;
 }
 
+/** New day starts with a single blank task — admin adds more as needed. */
 export function defaultTasksForDay(docId: string): RoutineTask[] {
-  return [
-    {
-      taskId: makeTaskId(docId, 1),
-      type: "status",
-      order: 1,
-      title: "How does your skin feel today?",
-      guidance: "Pick the closest match.",
-      statusImages: [...DEFAULT_STATUS_IMAGES],
-    },
-    {
-      taskId: makeTaskId(docId, 2),
-      type: "scan_face",
-      order: 2,
-      title: "Scan your face",
-      instruction: "Open the face scan to check today's skin status.",
-    },
-    {
-      taskId: makeTaskId(docId, 3),
-      type: "scan_product",
-      order: 3,
-      title: "Scan a product",
-      instruction: "Scan a skincare product to see how it fits your routine.",
-    },
-    {
-      taskId: makeTaskId(docId, 4),
-      type: "video",
-      order: 4,
-      title: "Evening Routine",
-      instruction: "Watch this short evening wind-down, then mirror the steps.",
-      videoUrl: SAMPLE_VIDEO_URL,
-      durationSec: 15,
-    },
-  ];
+  return [emptyTask(docId, 1)];
 }
 
 export function emptyTask(docId: string, order: number): RoutineTask {
@@ -146,7 +104,7 @@ export function emptyTask(docId: string, order: number): RoutineTask {
     order,
     title: "",
     guidance: "",
-    statusImages: [...DEFAULT_STATUS_IMAGES],
+    statusImages: [],
   };
 }
 
@@ -218,14 +176,22 @@ function normalizeTask(
   if (type === "status") {
     const imgs = (raw.statusImages || [])
       .map(String)
+      .map((u) => u.trim())
       .filter((u) => u.startsWith("http"));
-    task.statusImages = imgs.length ? imgs : [...DEFAULT_STATUS_IMAGES];
+    if (!imgs.length) {
+      throw new Error(
+        `Status task (order ${order}) needs at least one uploaded image`,
+      );
+    }
+    task.statusImages = imgs;
   }
 
   if (type === "video") {
     const url = String(raw.videoUrl || "").trim();
     if (!url.startsWith("http")) {
-      throw new Error(`Video task (order ${order}) needs a HTTPS videoUrl`);
+      throw new Error(
+        `Video task (order ${order}) needs a video uploaded to Storage`,
+      );
     }
     task.videoUrl = url;
     if (raw.durationSec != null) {

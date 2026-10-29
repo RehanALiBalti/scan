@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   createRoutineCheck,
   getRoutineCheck,
   updateRoutineCheck,
 } from "@/lib/adminStore";
+import { apiUpload } from "@/lib/apiClient";
 import {
-  DEFAULT_STATUS_IMAGES,
   ROUTINE_TASK_TYPES,
   dateToRoutineDocId,
   defaultTasksForDay,
@@ -42,7 +42,7 @@ const TYPE_META: Record<
   },
   video: {
     label: "Video",
-    hint: "Plays a short HTTPS mp4 clip",
+    hint: "Upload an mp4 / webm clip to Firebase Storage",
     accent: "type-video",
   },
 };
@@ -62,22 +62,21 @@ function textToSteps(value: string) {
     .filter(Boolean);
 }
 
-function ensureImageSlots(images: string[] | undefined, count = 5) {
-  const next = [...(images || [])];
-  while (next.length < count) next.push(DEFAULT_STATUS_IMAGES[next.length] || "");
-  return next.slice(0, Math.max(count, images?.length || 0));
-}
-
 export function RoutineCheckEditor() {
   const params = useParams<{ id?: string }>();
   const idParam = params?.id;
   const isNew = !idParam || idParam === "new";
   const router = useRouter();
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const uploadSlotRef = useRef<number | null>(null);
+  const [uploadSlot, setUploadSlot] = useState<number | null>(null);
 
   const [htmlDate, setHtmlDate] = useState(todayHtmlDate);
   const [tasks, setTasks] = useState<RoutineTask[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState("");
 
@@ -105,6 +104,7 @@ export function RoutineCheckEditor() {
             ...t,
             order: t.order || i + 1,
             taskId: t.taskId || makeTaskId(item.id, t.order || i + 1),
+            statusImages: Array.isArray(t.statusImages) ? t.statusImages : [],
           })),
         );
         setActiveIndex(0);
@@ -134,7 +134,9 @@ export function RoutineCheckEditor() {
         const next = { ...t, ...patch };
         if (patch.type && patch.type !== t.type) {
           if (patch.type === "status") {
-            next.statusImages = ensureImageSlots(next.statusImages, 5);
+            next.statusImages = Array.isArray(next.statusImages)
+              ? next.statusImages
+              : [];
             delete next.videoUrl;
             delete next.durationSec;
           } else if (patch.type === "video") {
@@ -156,11 +158,69 @@ export function RoutineCheckEditor() {
     setTasks((prev) =>
       prev.map((t, i) => {
         if (i !== taskIndex) return t;
-        const imgs = ensureImageSlots(t.statusImages, Math.max(5, slot + 1));
+        const imgs = [...(t.statusImages || [])];
+        while (imgs.length <= slot) imgs.push("");
         imgs[slot] = url;
         return { ...t, statusImages: imgs };
       }),
     );
+  };
+
+  const addStatusImageSlot = () => {
+    if (!activeTask) return;
+    const imgs = [...(activeTask.statusImages || []), ""];
+    updateTask(activeIndex, { statusImages: imgs });
+  };
+
+  const removeStatusImageSlot = (slot: number) => {
+    if (!activeTask) return;
+    const imgs = (activeTask.statusImages || []).filter((_, i) => i !== slot);
+    updateTask(activeIndex, { statusImages: imgs });
+  };
+
+  const uploadStatusImage = async (slot: number, file: File | null) => {
+    if (!file || !activeTask) return;
+    setError("");
+    if (!file.type.startsWith("image/")) {
+      setError("Please choose an image file");
+      return;
+    }
+    setUploading(true);
+    setUploadSlot(slot);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("folder", "routines");
+      const uploaded = await apiUpload<{ url: string }>("/api/upload", body);
+      setStatusImageAt(activeIndex, slot, uploaded.url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Image upload failed");
+    } finally {
+      setUploading(false);
+      setUploadSlot(null);
+      uploadSlotRef.current = null;
+    }
+  };
+
+  const uploadVideo = async (file: File | null) => {
+    if (!file || !activeTask) return;
+    setError("");
+    if (!file.type.startsWith("video/")) {
+      setError("Please choose a video file (MP4 / WEBM / MOV)");
+      return;
+    }
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("folder", "routines");
+      const uploaded = await apiUpload<{ url: string }>("/api/upload", body);
+      updateTask(activeIndex, { videoUrl: uploaded.url });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Video upload failed");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const moveTask = (index: number, dir: -1 | 1) => {
@@ -189,7 +249,10 @@ export function RoutineCheckEditor() {
           taskId: docId ? makeTaskId(docId, i + 1) : t.taskId,
         }));
       setActiveIndex((a) =>
-        Math.min(a >= index ? Math.max(0, a - 1) : a, Math.max(0, remapped.length - 1)),
+        Math.min(
+          a >= index ? Math.max(0, a - 1) : a,
+          Math.max(0, remapped.length - 1),
+        ),
       );
       return remapped;
     });
@@ -238,6 +301,8 @@ export function RoutineCheckEditor() {
 
   if (loading) return <p className="toolbar-copy">Loading…</p>;
 
+  const statusImages = activeTask?.statusImages || [];
+
   return (
     <form className="routine-shell" onSubmit={onSubmit}>
       <header className="routine-hero">
@@ -245,8 +310,9 @@ export function RoutineCheckEditor() {
           <p className="routine-kicker">Firestore · RoutineChecks</p>
           <h2>{isNew ? "New Daily Plan" : "Edit Daily Plan"}</h2>
           <p className="toolbar-copy">
-            Doc ID must be <strong>ddMMyyyy</strong>. Tasks unlock in order. Leave{" "}
-            <code>completedUsers</code> empty — the app writes that.
+            Starts with <strong>1 task</strong> — add as many as you need. Media
+            uploads go to Firebase Storage. Leave <code>completedUsers</code>{" "}
+            empty.
           </p>
         </div>
         <div className="routine-hero-meta">
@@ -273,7 +339,7 @@ export function RoutineCheckEditor() {
         <aside className="routine-rail">
           <div className="routine-rail-head">
             <h3>Task sequence</h3>
-            <span>{tasks.length} steps</span>
+            <span>{tasks.length} step{tasks.length === 1 ? "" : "s"}</span>
           </div>
           <ol className="routine-rail-list">
             {tasks.map((task, index) => {
@@ -297,7 +363,11 @@ export function RoutineCheckEditor() {
               );
             })}
           </ol>
-          <button type="button" className="btn btn-outline rail-add" onClick={addTask}>
+          <button
+            type="button"
+            className="btn btn-outline rail-add"
+            onClick={addTask}
+          >
             + Add task
           </button>
         </aside>
@@ -309,7 +379,9 @@ export function RoutineCheckEditor() {
                 <div>
                   <p className="label-caps">Editing task {activeIndex + 1}</p>
                   <h3>{TYPE_META[activeTask.type].label}</h3>
-                  <p className="toolbar-copy">{TYPE_META[activeTask.type].hint}</p>
+                  <p className="toolbar-copy">
+                    {TYPE_META[activeTask.type].hint}
+                  </p>
                 </div>
                 <div className="product-actions">
                   <button
@@ -410,7 +482,7 @@ export function RoutineCheckEditor() {
                     placeholder={"One step per line\nCleanse gently\nPat dry"}
                   />
                   <span className="field-hint">
-                    Optional checklist shown in the app. One line = one step.
+                    Optional checklist. One line = one step.
                   </span>
                 </label>
 
@@ -430,90 +502,176 @@ export function RoutineCheckEditor() {
                 {activeTask.type === "status" ? (
                   <div className="status-images-block">
                     <div className="status-images-head">
-                      <span className="label-caps">Status images</span>
-                      <span className="field-hint">
-                        Usually 5 mood faces — preview updates live
-                      </span>
+                      <div>
+                        <span className="label-caps">Status images</span>
+                        <span className="field-hint">
+                          Add as many moods as you need — upload from Storage
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn btn-soft"
+                        style={{ minHeight: 36 }}
+                        onClick={addStatusImageSlot}
+                        disabled={uploading}
+                      >
+                        + Add image
+                      </button>
                     </div>
+
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      hidden
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        e.target.value = "";
+                        const slot = uploadSlotRef.current;
+                        if (slot == null) return;
+                        void uploadStatusImage(slot, file);
+                      }}
+                    />
+
+                    {!statusImages.length ? (
+                      <p className="toolbar-copy">
+                        No images yet. Click “+ Add image”, then upload.
+                      </p>
+                    ) : null}
+
                     <div className="status-image-grid">
-                      {ensureImageSlots(activeTask.statusImages, 5).map(
-                        (url, slot) => (
-                          <div key={slot} className="status-image-slot">
-                            <div className="status-image-preview">
-                              {url ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={url} alt={`Mood ${slot + 1}`} />
-                              ) : (
-                                <span>{slot + 1}</span>
-                              )}
-                            </div>
-                            <label className="form-label">
-                              <span className="label-caps">Image {slot + 1}</span>
-                              <input
-                                className="form-input"
-                                type="url"
-                                value={url}
-                                onChange={(e) =>
-                                  setStatusImageAt(
-                                    activeIndex,
-                                    slot,
-                                    e.target.value,
-                                  )
-                                }
-                                placeholder="https://…"
-                              />
-                            </label>
+                      {statusImages.map((url, slot) => (
+                        <div key={slot} className="status-image-slot">
+                          <div className="status-image-preview">
+                            {url ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={url} alt={`Mood ${slot + 1}`} />
+                            ) : (
+                              <span>{slot + 1}</span>
+                            )}
                           </div>
-                        ),
-                      )}
+                          <span className="label-caps">Image {slot + 1}</span>
+                          <div className="media-slot-actions">
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              style={{ minHeight: 36, flex: 1 }}
+                              disabled={uploading}
+                              onClick={() => {
+                                uploadSlotRef.current = slot;
+                                setUploadSlot(slot);
+                                imageInputRef.current?.click();
+                              }}
+                            >
+                              {uploading && uploadSlot === slot
+                                ? "Uploading…"
+                                : url
+                                  ? "Replace"
+                                  : "Upload"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-soft"
+                              style={{ minHeight: 36 }}
+                              disabled={uploading}
+                              onClick={() => removeStatusImageSlot(slot)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          {url ? (
+                            <p className="field-hint media-url-clip" title={url}>
+                              Stored in Storage
+                            </p>
+                          ) : (
+                            <p className="field-hint">Upload required</p>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ) : null}
 
                 {activeTask.type === "video" ? (
-                  <div className="form-row-2">
-                    <label className="form-label">
-                      <span className="label-caps">Video URL</span>
-                      <input
-                        className="form-input"
-                        type="url"
-                        value={activeTask.videoUrl || ""}
-                        onChange={(e) =>
-                          updateTask(activeIndex, { videoUrl: e.target.value })
-                        }
-                        placeholder="https://…/clip.mp4"
-                        required
-                      />
-                    </label>
-                    <label className="form-label">
-                      <span className="label-caps">Duration (sec)</span>
-                      <input
-                        className="form-input"
-                        type="number"
-                        min={1}
-                        value={activeTask.durationSec ?? 15}
-                        onChange={(e) =>
-                          updateTask(activeIndex, {
-                            durationSec: Number(e.target.value) || 15,
-                          })
-                        }
-                      />
-                    </label>
+                  <div className="video-upload-block">
+                    <div className="status-images-head">
+                      <div>
+                        <span className="label-caps">Video file</span>
+                        <span className="field-hint">
+                          Upload MP4 / WEBM / MOV to Firebase Storage (max 80 MB)
+                        </span>
+                      </div>
+                    </div>
+                    <input
+                      ref={videoInputRef}
+                      type="file"
+                      accept="video/mp4,video/webm,video/quicktime"
+                      hidden
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        e.target.value = "";
+                        void uploadVideo(file);
+                      }}
+                    />
+                    <div className="video-upload-row">
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={uploading}
+                        onClick={() => videoInputRef.current?.click()}
+                      >
+                        {uploading
+                          ? "Uploading…"
+                          : activeTask.videoUrl
+                            ? "Replace video"
+                            : "Upload video"}
+                      </button>
+                      <label className="form-label" style={{ margin: 0, flex: 1 }}>
+                        <span className="label-caps">Duration (sec)</span>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min={1}
+                          value={activeTask.durationSec ?? 15}
+                          onChange={(e) =>
+                            updateTask(activeIndex, {
+                              durationSec: Number(e.target.value) || 15,
+                            })
+                          }
+                        />
+                      </label>
+                    </div>
+                    {activeTask.videoUrl ? (
+                      <div className="video-ready">
+                        <span>▶ Video ready in Storage</span>
+                        <video
+                          key={activeTask.videoUrl}
+                          src={activeTask.videoUrl}
+                          controls
+                          preload="metadata"
+                          className="video-preview-el"
+                        />
+                      </div>
+                    ) : (
+                      <p className="toolbar-copy">No video uploaded yet.</p>
+                    )}
                   </div>
                 ) : null}
 
                 {(activeTask.type === "scan_face" ||
                   activeTask.type === "scan_product") && (
                   <div className="routine-type-note">
-                    No extra media fields for{" "}
+                    No extra media for{" "}
                     <strong>{TYPE_META[activeTask.type].label}</strong> — the app
-                    opens the camera flow directly.
+                    opens the camera flow.
                   </div>
                 )}
               </div>
             </section>
           ) : (
-            <p className="toolbar-copy">Add a task to start building the day plan.</p>
+            <p className="toolbar-copy">
+              Add a task to start building the day plan.
+            </p>
           )}
         </div>
 
@@ -523,12 +681,16 @@ export function RoutineCheckEditor() {
             {activeTask ? (
               <div className="phone-preview">
                 <div className="phone-preview-inner">
-                  <span className={`preview-type-chip ${TYPE_META[activeTask.type].accent}`}>
+                  <span
+                    className={`preview-type-chip ${TYPE_META[activeTask.type].accent}`}
+                  >
                     {TYPE_META[activeTask.type].label}
                   </span>
                   <h4>{activeTask.title || "Task title"}</h4>
                   {activeTask.instruction ? (
-                    <p className="preview-instruction">{activeTask.instruction}</p>
+                    <p className="preview-instruction">
+                      {activeTask.instruction}
+                    </p>
                   ) : null}
                   {activeTask.guidance ? (
                     <p className="preview-guidance">{activeTask.guidance}</p>
@@ -542,6 +704,10 @@ export function RoutineCheckEditor() {
                           // eslint-disable-next-line @next/next/no-img-element
                           <img key={url} src={url} alt="" />
                         ))}
+                      {!(activeTask.statusImages || []).filter(Boolean)
+                        .length ? (
+                        <span className="field-hint">No images yet</span>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -549,7 +715,9 @@ export function RoutineCheckEditor() {
                     <div className="preview-video">
                       <span>▶</span>
                       <div>
-                        <strong>Video clip</strong>
+                        <strong>
+                          {activeTask.videoUrl ? "Video ready" : "No video"}
+                        </strong>
                         <small>{activeTask.durationSec ?? 15}s</small>
                       </div>
                     </div>
@@ -593,7 +761,11 @@ export function RoutineCheckEditor() {
           >
             Cancel
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !tasks.length}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={busy || uploading || !tasks.length}
+          >
             {busy ? "Saving…" : isNew ? "Create Day Plan" : "Save Changes"}
           </button>
         </div>
